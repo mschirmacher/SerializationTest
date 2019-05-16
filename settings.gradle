@@ -1,0 +1,15 @@
+pluginManagement {
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id == "kotlinx-serialization") {
+                useModule("org.jetbrains.kotlin:kotlin-serialization:${requested.version}")
+            }
+        }
+    }
+}
+
+rootProject.name = 'serialization'
+
+// the node.js plugin doesn't work if this preview is enabled
+// enableFeaturePreview('GRADLE_METADATA')
+

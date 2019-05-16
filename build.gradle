@@ -1,0 +1,180 @@
+import java.util.stream.Collectors
+import java.util.stream.StreamSupport
+
+buildscript {
+    ext.kotlin_version = '1.3.31'
+
+    ext {
+        kotlinx_serialization_version = '0.11.0'
+        node_plugin_version = '1.2.0'
+
+        node_version = '11.2.0'
+        jest_version = '23.6.0'
+        file_separator = '/'
+        path_separator = System.properties["path.separator"]
+        node_working_dir = "${project.buildDir}$file_separator"
+        node_modules = "${node_working_dir}node_modules"
+    }
+
+    repositories {
+        mavenCentral()
+        jcenter()
+        maven { url "https://kotlin.bintray.com/kotlinx" }
+        maven { url "https://plugins.gradle.org/m2/" }
+    }
+}
+
+plugins {
+    id 'kotlinx-serialization' version '1.3.31'
+    id "org.jetbrains.kotlin.multiplatform" version '1.3.31'
+    id "com.moowork.node" version "1.3.1"
+}
+
+repositories {
+    mavenCentral()
+    jcenter()
+    maven { url "https://kotlin.bintray.com/kotlinx" }
+    maven { url "https://kotlin.bintray.com/js-externals" }
+}
+group 'some.test'
+version '1.0-SNAPSHOT'
+
+kotlin {
+    targets {
+        fromPreset(presets.jvm, 'jvm') {
+            [compileKotlinJvm, compileTestKotlinJvm].each { configuration ->
+                configuration.kotlinOptions {
+                    freeCompilerArgs = ['-Xjsr305=strict']
+                    jvmTarget = '1.8'
+                }
+            }
+        }
+        fromPreset(presets.js, 'js') {
+            [compileKotlinJs, compileTestKotlinJs].each { configuration ->
+                configuration.kotlinOptions {
+                    moduleKind = 'commonjs'
+                }
+            }
+        }
+    }
+
+    sourceSets {
+        commonMain {
+            dependencies {
+                api "org.jetbrains.kotlin:kotlin-stdlib-common:$kotlin_version"
+                api "org.jetbrains.kotlinx:kotlinx-serialization-runtime:$kotlinx_serialization_version"
+            }
+        }
+        commonTest {
+            dependencies {
+                implementation "org.jetbrains.kotlin:kotlin-test-common:$kotlin_version"
+                implementation "org.jetbrains.kotlin:kotlin-test-annotations-common:$kotlin_version"
+            }
+        }
+        jsMain {
+            dependencies {
+                implementation "org.jetbrains.kotlin:kotlin-stdlib-js:$kotlin_version"
+                implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime-js:$kotlinx_serialization_version"
+            }
+        }
+        jsTest {
+            dependencies {
+                implementation "org.jetbrains.kotlin:kotlin-test-js:$kotlin_version"
+            }
+        }
+        jvmMain {
+            dependencies {
+                implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+            }
+        }
+        jvmTest {
+            dependencies {
+                implementation "org.jetbrains.kotlin:kotlin-test:$kotlin_version"
+                implementation "org.jetbrains.kotlin:kotlin-test-junit:$kotlin_version"
+                implementation "org.jetbrains.kotlinx:kotlinx-serialization-runtime:$kotlinx_serialization_version"
+            }
+        }
+    }
+}
+
+def jsLibDir = "$compileKotlinJs.destinationDir${file_separator}lib"
+def jsTestLibDir = "$compileTestKotlinJs.destinationDir${file_separator}lib"
+
+task copyJsRuntimeDependencies(dependsOn: compileKotlinJs) {
+    doLast {
+        def resolvedDependencies = lookupDependenciesForConfiguration("jsRuntimeClasspath")
+        resolvedDependencies.forEach {
+            resolvedDependency ->
+                copy {
+                    from(zipTree(resolvedDependency.file))
+                    include("*.js")
+                    exclude("**/*.meta.js")
+                    includeEmptyDirs = false
+                    into jsLibDir
+                }
+        }
+    }
+}
+
+jsMainClasses.dependsOn copyJsRuntimeDependencies
+
+task copyJsTestDependencies(dependsOn: compileTestKotlinJs) {
+    doLast {
+        def resolvedDependencies = lookupDependenciesForConfiguration("jsTestRuntimeClasspath")
+        resolvedDependencies.forEach {
+            resolvedDependency ->
+                copy {
+                    includeEmptyDirs = false
+                    from(zipTree(resolvedDependency.file))
+                    include("*.js")
+                    exclude("**/*.meta.js")
+                    into jsTestLibDir
+                }
+        }
+    }
+}
+jsTestClasses.dependsOn copyJsTestDependencies
+
+node {
+    version = node_version
+    download = true
+    workDir = file("$project.buildDir${file_separator}nodejs")
+    nodeModulesDir = file(node_working_dir)
+}
+
+task installJest(type: NpmTask, group: 'npm') {
+    outputs.dirs "$node_modules${file_separator}jest"
+    args = ['install', "jest@$jest_version"]
+}
+
+task runJest(type: NodeTask, dependsOn: [installJest, jsMainClasses, jsTestClasses], group: 'npm') {
+    def nodePaths = [node_modules, jsLibDir, jsTestLibDir, compileKotlinJs.destinationDir]
+
+    environment = ["NODE_PATH": nodePaths.join(path_separator)]
+    script = file([node_modules, 'jest', 'bin', 'jest'].join(file_separator))
+    args = ['--detectOpenHandles', fixFileSeparator(compileTestKotlinJs.outputFile)]
+}
+jsTest.dependsOn runJest
+
+private Set<ResolvedArtifact> lookupDependenciesForConfiguration(String configurationName) {
+    def resolvedArtifacts = new HashSet<ResolvedArtifact>()
+    configurations[configurationName]
+            .resolvedConfiguration
+            .firstLevelModuleDependencies.forEach(
+            {
+                resolvedArtifacts.addAll(
+                        it.allModuleArtifacts.stream()
+                                .filter({ it != null })
+                                .filter({ it.type == "jar" })
+                                .collect(Collectors.toSet())
+                )
+            })
+
+    return resolvedArtifacts
+}
+
+private String fixFileSeparator(File file) {
+    return StreamSupport.stream(file.toPath().spliterator(), false)
+            .map({ it.toString() })
+            .collect(Collectors.joining(file_separator, file_separator, ""))
+}
